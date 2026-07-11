@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Build folders
+dist/
+build/
+
+# Environment files
+.env
+.env.*
+
+# VS Code
+.vscode/
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
+
+# Coverage
+coverage/
+
+# Cache
+.cache/
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# IDE
+.idea/
+
+# OS
+Thumbs.db
