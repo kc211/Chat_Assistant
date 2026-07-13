@@ -4,6 +4,8 @@ from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from graph.state import new_task_state
 from config import MAX_STEPS,UPLOAD_DIR
+from db.session import open_pool, close_pool
+from db.crud import save_document, create_task, update_task
 import uuid
 import os
 import shutil
@@ -31,7 +33,8 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(goal: str= Form(...), file: UploadFile | None = Form(None) , doc_id: str | None = Form(None)):
     task_id= str(uuid.uuid4())
-    await new_task_state(goal, doc_id,MAX_STEPS)
+    state= new_task_state(goal, doc_id,MAX_STEPS)
+    await create_task(task_id,goal,doc_id) #for the db records
 
 
 
