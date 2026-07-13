@@ -51,5 +51,5 @@ Respond with ONLY this JSON, no other text:
     if decision["needs_pdf"] and decision["needs_web"]:
         detail += " (comparison — both gatherers will run)"
     add_trace(state, "planner", "done", detail)
-
+    print("tracing completed")
     return {**decision, "step_count": state["step_count"], "trace": state["trace"]}

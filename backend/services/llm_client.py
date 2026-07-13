@@ -25,6 +25,7 @@ async def generate_text(prompt: str) -> str:
 
     def _call():
         response = client.models.generate_content(model=GEMINI_GEN_MODEL, contents=prompt)
+       
         return response.text
 
     return await asyncio.to_thread(_call)

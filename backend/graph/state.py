@@ -39,7 +39,7 @@ def new_task_state(goal:str,doc_id: str | None ,MAX_STEPS:int) -> TaskState:
         needs_pdf=False,needs_web=False,
         findings="",insights="",final_result="",
         step_count=0,max_steps=MAX_STEPS,status="running",error=None,
-        Trace=[]
+        trace=[]
     )
 
 def check_step_budget(state: TaskState, node_name: str) -> bool:
