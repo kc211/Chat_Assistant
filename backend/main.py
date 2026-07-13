@@ -40,6 +40,10 @@ app.add_middleware(
 @app.post("/chat")
 async def chat(goal: str= Form(...), file: UploadFile | None = Form(None) , doc_id: str | None = Form(None)):
 
+    
+    async def event_generator():
+        nonlocal doc_id
+
     if file is not None:
             new_doc_id = str(uuid.uuid4())
             file_path = os.path.join(UPLOAD_DIR, f"{new_doc_id}.pdf")
@@ -58,6 +62,28 @@ async def chat(goal: str= Form(...), file: UploadFile | None = Form(None) , doc_
     task_id= str(uuid.uuid4())
     state= new_task_state(goal, doc_id,MAX_STEPS)
     await create_task(task_id,goal,doc_id) #for the db records
+
+    yield sse_format("task_started",{"task_id":task_id})
+
+    try:
+        async for step_output in compiled_graph.astream(state):
+            for node_name, update in step_output.items():
+              state.update(update)
+              yield sse_format("node_update",{
+                   "node":node_name,
+                   "status":state.get("status"),
+                    "trace-tail":state["trace"][-1] if state["trace"] else None,
+              })
+    except Exception as exc:
+        state["status"]="failed"
+        state["error"]=str(exc)
+        yield sse_format("error",{"message":str(exc)})
+
+    await update_task(task_id,state["status"],state.get("final_result"),state.get("error"),state["trace"])
+    yield sse_format("task_complete",{
+        "task_id":task_id,"status":state["status"],"final-result":state["final_result"], "error":state["error"]
+    })
+    return StreamingResponse(event_generator(),media_type="text/event-stream")
 
 
 
