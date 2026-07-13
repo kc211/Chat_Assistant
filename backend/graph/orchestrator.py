@@ -33,7 +33,7 @@ def build_graph():
     graph.add_node("analyser", analyser_node)
     graph.add_node("writer", writer_node)
 
-    graph.set_entry_node("planner")
+    graph.set_entry_point("planner")
 
     graph.add_conditional_edges("planner",route_after_planner,
      {"gatherer_pdf": "gatherer_pdf", "gatherer_web": "gatherer_web", "gatherer_both": "gatherer_both", END: END})
