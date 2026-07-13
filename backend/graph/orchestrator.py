@@ -2,12 +2,11 @@ from langgraph.graph import StateGraph, END
 
 from graph.state import TaskState
 from graph.planner import planner_node
-from graph.gather_pdf import gatherer_pdf_node
-from graph.gather_web import gatherer_web_node
-from graph.gather_both import gatherer_both
-from graph.analyser import analyser_node
-from graph.write import writer_node
-
+from graph.nodes_pdf import gatherer_pdf_node
+from graph.nodes_web import gatherer_web_node
+from graph.nodes_both import gatherer_both_node
+from graph.nodes_analyser import analyser_node
+from graph.nodes_writer import writer_node
 
 def route_after_planner(state: TaskState) -> str:
     if state["status"] == "partial":
@@ -27,12 +26,12 @@ def after_gather_or_analyser(state: TaskState) -> str:
 def build_graph():
     graph= StateGraph(TaskState)
 
-    graph.add_node("planner",planner_node)
-    graph.add_node("gather_pdf",gatherer_pdf_node)
-    graph.add_node("gather_web",gatherer_web_node)
-    graph.add_node("gather_both",gatherer_both)
-    graph.add_node("analyser",analyser_node)
-    graph.add_node("writer",writer_node)
+    graph.add_node("planner", planner_node)
+    graph.add_node("gatherer_pdf", gatherer_pdf_node)
+    graph.add_node("gatherer_web", gatherer_web_node)
+    graph.add_node("gatherer_both", gatherer_both_node)
+    graph.add_node("analyser", analyser_node)
+    graph.add_node("writer", writer_node)
 
     graph.set_entry_node("planner")
 
