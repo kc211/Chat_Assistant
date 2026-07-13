@@ -42,3 +42,11 @@ def new_task_state(goal:str,doc_id: str | None ,MAX_STEPS:int) -> TaskState:
         Trace=[]
     )
 
+def check_step_budget(state: TaskState, node_name: str) -> bool:
+    state["step_count"] += 1
+    if state["step_count"] > state["max_steps"]:
+        state["status"] = "partial"
+        state["error"] = f"Stopped: reached max_steps ({state['max_steps']}) before {node_name}."
+        add_trace(state, node_name, "skipped", "step budget exceeded")
+        return False
+    return True
