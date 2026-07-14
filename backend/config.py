@@ -14,7 +14,7 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 TOP_K = 5
 
-GEMINI_GEN_MODEL = "gemini-3.5-flash"
+GEMINI_GEN_MODEL = "gemini-2.5-flash"
 GEMINI_EMBED_MODEL = "gemini-embedding-001"
 
 MAX_STEPS = 5              # planner + gatherer(s) + analyser + writer = 4 steps; 5 gives headroom

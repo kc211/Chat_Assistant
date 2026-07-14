@@ -1,12 +1,12 @@
-from graph.state import TaskState, add_trace, check_step_budget
-from services.llm_client import generate_text
+from graph.state import TaskState, add_trace, emit_running, check_step_budget
+from services.llm_client import generate_text, LLMError
 
 
 async def analyser_node(state: TaskState) -> dict:
     if not check_step_budget(state, "analyser"):
         return {"step_count": state["step_count"], "status": state["status"], "error": state["error"], "trace": state["trace"]}
 
-    add_trace(state, "analyser", "started", "compressing findings into insights")
+    await emit_running(state, "analyser", "compressing findings into insights")
 
     if not state["findings"]:
         insights = "No findings were retrieved. Proceeding with general knowledge only — treat the answer as unverified."
@@ -25,6 +25,13 @@ Findings:
 
 Key points:"""
 
-    insights = await generate_text(prompt)
+    try:
+        insights = await generate_text(prompt)
+    except LLMError as exc:
+        # e.g. Gemini 503 after 3 retries -> stop the run, show analyser · error.
+        add_trace(state, "analyser", "failed", exc.message)
+        exc.node = "analyser"
+        raise
+
     add_trace(state, "analyser", "done", "insights produced")
     return {"insights": insights, "step_count": state["step_count"], "trace": state["trace"]}

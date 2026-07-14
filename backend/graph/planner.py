@@ -1,6 +1,6 @@
 import json
-from graph.state import TaskState, add_trace, check_step_budget
-from services.llm_client import generate_text
+from graph.state import TaskState, add_trace, emit_running, check_step_budget
+from services.llm_client import generate_text, LLMError
 
 
 def _safe_parse(raw: str) -> dict:
@@ -9,17 +9,21 @@ def _safe_parse(raw: str) -> dict:
         data = json.loads(cleaned)
         return {"needs_pdf": bool(data.get("needs_pdf", True)), "needs_web": bool(data.get("needs_web", False))}
     except Exception:
+        # Safe fallback: a doc was attached, so default to reading it rather
+        # than silently ignoring the attachment.
         return {"needs_pdf": True, "needs_web": False}
 
 
 async def planner_node(state: TaskState) -> dict:
-   
+    """Decides needs_pdf / needs_web by reasoning over the goal text. On an
+    LLM failure it raises the structured LLMError (tagged 'planner') so the
+    run stops and the UI shows planner · error — no partial fallback."""
     if not check_step_budget(state, "planner"):
         return {"step_count": state["step_count"], "status": state["status"], "error": state["error"], "trace": state["trace"]}
 
+    await emit_running(state, "planner", "deciding which sources are needed")
+
     if state["doc_id"] is None:
-        # No document exists to reason about — the only possible source is the web.
-        print("inside this without doc ")
         add_trace(state, "planner", "done", "no document attached -> web search only")
         return {"needs_pdf": False, "needs_web": True, "step_count": state["step_count"], "trace": state["trace"]}
 
@@ -38,18 +42,18 @@ Rules:
 Respond with ONLY this JSON, no other text:
 {{"needs_pdf": true or false, "needs_web": true or false}}"""
 
-    print("before generation ")
-    raw = await generate_text(prompt)
+    try:
+        raw = await generate_text(prompt)
+    except LLMError as exc:
+        add_trace(state, "planner", "failed", exc.message)
+        exc.node = "planner"
+        raise
 
-    print("first answer of planner")
     decision = _safe_parse(raw)
-
-    print("-------checking the planner decision")
-    print(decision)
 
     detail = f"needs_pdf={decision['needs_pdf']}, needs_web={decision['needs_web']}"
     if decision["needs_pdf"] and decision["needs_web"]:
         detail += " (comparison — both gatherers will run)"
     add_trace(state, "planner", "done", detail)
-    print("tracing completed")
+
     return {**decision, "step_count": state["step_count"], "trace": state["trace"]}

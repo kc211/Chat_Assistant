@@ -1,6 +1,7 @@
 from config import MAX_FINDINGS_CHARS
-from graph.state import TaskState, add_trace, check_step_budget
+from graph.state import TaskState, add_trace, emit_running, check_step_budget
 from services.search_client import search_web
+from services.llm_client import LLMError
 
 
 async def web_gather_core(state: TaskState) -> str:
@@ -15,16 +16,17 @@ async def gatherer_web_node(state: TaskState) -> dict:
     if not check_step_budget(state, "gatherer_web"):
         return {"step_count": state["step_count"], "status": state["status"], "error": state["error"], "trace": state["trace"]}
 
-    add_trace(state, "gatherer_web", "started", f"searching web for: {state['goal']}")
+    await emit_running(state, "gatherer_web", f"searching web for: {state['goal']}")
     try:
         findings = await web_gather_core(state)
         add_trace(state, "gatherer_web", "done", "results found")
-        print("------ inside tavily")
-        print(findings)
         return {"findings": findings, "step_count": state["step_count"], "trace": state["trace"]}
     except Exception as exc:
-        # Fallback per assignment: don't crash, don't loop — proceed with
-        # empty findings and let the writer report the gap honestly.
-        add_trace(state, "gatherer_web", "failed", f"web search unavailable: {exc}")
-        return {"findings": "", "step_count": state["step_count"], "trace": state["trace"],
-                 "error": f"Web search failed: {exc}"}
+        # No degradation: a failed web search stops the whole run (previously
+        # this fell back to empty findings + partial — removed per spec).
+        add_trace(state, "gatherer_web", "failed", str(exc))
+        if not isinstance(exc, LLMError):
+            exc = LLMError(502, "web_search_error", "Web Search Failed",
+                           "Web search is currently unavailable.", True)
+        exc.node = "gatherer_web"
+        raise exc

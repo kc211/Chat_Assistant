@@ -1,3 +1,5 @@
+# Verify: https://langchain-ai.github.io/langgraph/ for current StateGraph API.
+
 from langgraph.graph import StateGraph, END
 
 from graph.state import TaskState
@@ -8,8 +10,12 @@ from graph.nodes_both import gatherer_both_node
 from graph.nodes_analyser import analyser_node
 from graph.nodes_writer import writer_node
 
+
 def route_after_planner(state: TaskState) -> str:
-    if state["status"] == "partial":
+    """Dynamic decision from the planner's reasoning over the goal text.
+    Stops early only if the step budget was hit (status 'failed'); node
+    *errors* don't reach here — they raise and are handled in main.py."""
+    if state["status"] == "failed":
         return END
     if state["needs_pdf"] and state["needs_web"]:
         return "gatherer_both"
@@ -19,12 +25,12 @@ def route_after_planner(state: TaskState) -> str:
 
 
 def after_gather_or_analyser(state: TaskState) -> str:
-    """Shared checkpoint: stop immediately if the step budget was hit —
-    the entire loop/cost guard lives here."""
-    return END if state["status"] == "partial" else "continue"
+
+    return END if state["status"] == "failed" else "continue"
+
 
 def build_graph():
-    graph= StateGraph(TaskState)
+    graph = StateGraph(TaskState)
 
     graph.add_node("planner", planner_node)
     graph.add_node("gatherer_pdf", gatherer_pdf_node)
@@ -35,11 +41,14 @@ def build_graph():
 
     graph.set_entry_point("planner")
 
-    graph.add_conditional_edges("planner",route_after_planner,
-     {"gatherer_pdf": "gatherer_pdf", "gatherer_web": "gatherer_web", "gatherer_both": "gatherer_both", END: END})
+    graph.add_conditional_edges(
+        "planner", route_after_planner,
+        {"gatherer_pdf": "gatherer_pdf", "gatherer_web": "gatherer_web", "gatherer_both": "gatherer_both", END: END},
+    )
 
     for gather_node in ("gatherer_pdf", "gatherer_web", "gatherer_both"):
         graph.add_conditional_edges(gather_node, after_gather_or_analyser, {"continue": "analyser", END: END})
+
     graph.add_conditional_edges("analyser", after_gather_or_analyser, {"continue": "writer", END: END})
     graph.add_edge("writer", END)
 

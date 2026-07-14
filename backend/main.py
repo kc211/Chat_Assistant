@@ -1,5 +1,5 @@
+import logging
 import os
-import shutil
 import uuid
 from contextlib import asynccontextmanager
 
@@ -15,7 +15,10 @@ from services.llm_client import embed_chunks
 from services.vector_store import add_chunks_to_collection
 from graph.state import new_task_state
 from graph.orchestrator import compiled_graph
-from streaming.sse import sse_format
+from streaming.sse import sse_format, sse_error
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("chat")
 
 
 @asynccontextmanager
@@ -67,72 +70,65 @@ async def chat(
     async def event_generator():
         nonlocal doc_id
 
+        # A task_id is created up front so that a failure ANYWHERE below
+        # (including PDF ingestion) can still be recorded as "failed" in the
+        # DB and reported to the client, then the stream closed cleanly.
+        task_id = str(uuid.uuid4())
+
         # -------------------------------
-        # PDF ingestion
+        # PDF ingestion (now fully guarded)
 
         if file_path is not None:
             yield sse_format(
                 "node_update",
-                {
-                    "node": "ingest_pdf",
-                    "status": "started",
-                    "trace_tail": None,
-                },
+                {"node": "ingest_pdf", "status": "started", "trace_tail": None},
             )
 
-            full_text = await extract_text_from_pdf(file_path)
-            chunks = await chunk_text(full_text, doc_title=filename)
-            vectors = await embed_chunks(chunks)
-
-            await add_chunks_to_collection(doc_id, chunks, vectors)
-            await save_document(
-                doc_id,
-                filename,
-                file_path,
-                len(chunks),
-            )
+            try:
+                full_text = await extract_text_from_pdf(file_path)
+                chunks = await chunk_text(full_text, doc_title=filename)
+                vectors = await embed_chunks(chunks)
+                await add_chunks_to_collection(doc_id, chunks, vectors)
+                await save_document(doc_id, filename, file_path, len(chunks))
+            except Exception as exc:
+                # Full traceback stays server-side; client gets a clean event.
+                logger.exception("PDF ingestion failed")
+                # Best-effort: record the failed task without crashing further.
+                try:
+                    await create_task(task_id, goal, doc_id)
+                    await update_task(task_id, "failed", None,
+                                      "PDF ingestion failed.", [])
+                except Exception:
+                    logger.exception("failed to record failed ingestion task")
+                yield sse_error(exc, node="ingest_pdf")
+                return  # stop the stream — no trailing task_complete
 
             yield sse_format(
                 "doc_ingested",
-                {
-                    "doc_id": doc_id,
-                    "filename": filename,
-                },
+                {"doc_id": doc_id, "filename": filename},
             )
 
         # -------------------------------
         # Create task
 
-        task_id = str(uuid.uuid4())
+        state = new_task_state(goal, doc_id, MAX_STEPS)
 
-        state = new_task_state(
-            goal,
-            doc_id,
-            MAX_STEPS,
-        )
+        try:
+            await create_task(task_id, goal, doc_id)
+        except Exception as exc:
+            logger.exception("failed to create task row")
+            yield sse_error(exc, node="database")
+            return
 
-        await create_task(
-            task_id,
-            goal,
-            doc_id,
-        )
-
-        yield sse_format(
-            "task_started",
-            {
-                "task_id": task_id,
-            },
-        )
+        yield sse_format("task_started", {"task_id": task_id})
 
         # -------------------------------
         # Execute LangGraph
- 
+
         try:
-            print("Starting graph execution")
+            logger.info("Starting graph execution")
 
             async for step_output in compiled_graph.astream(state):
-                print(step_output)
-
                 for node_name, update in step_output.items():
                     state.update(update)
 
@@ -141,33 +137,44 @@ async def chat(
                         {
                             "node": node_name,
                             "status": state.get("status"),
-                            "trace_tail": state["trace"][-1]
-                            if state["trace"]
-                            else None,
+                            "trace_tail": state["trace"][-1] if state["trace"] else None,
                         },
                     )
 
         except Exception as exc:
+            # A node raised (e.g. LLM 503/429/etc.). Mark failed, tell the
+            # client with a structured error, and close the stream. We do
+            # NOT fall through to task_complete — that trailing event was
+            # what produced the empty/duplicate assistant bubble.
+            logger.exception("graph execution failed")
             state["status"] = "failed"
-            state["error"] = str(exc)
+            state["error"] = getattr(exc, "message", "Task execution failed.")
 
-            yield sse_format(
-                "error",
-                {
-                    "message": str(exc),
-                },
-            )
+            failed_node = getattr(exc, "node", None)
+            try:
+                await update_task(task_id, "failed", state.get("final_result"),
+                                  state["error"], state["trace"])
+            except Exception:
+                logger.exception("failed to persist failed task")
+
+            yield sse_error(exc, node=failed_node)
+            return
 
         # -------------------------------
-        # Save final task
+        # Save final task (success / partial path only)
 
-        await update_task(
-            task_id,
-            state["status"],
-            state.get("final_result"),
-            state.get("error"),
-            state["trace"],
-        )
+        try:
+            await update_task(
+                task_id,
+                state["status"],
+                state.get("final_result"),
+                state.get("error"),
+                state["trace"],
+            )
+        except Exception as exc:
+            logger.exception("failed to persist completed task")
+            yield sse_error(exc, node="database")
+            return
 
         yield sse_format(
             "task_complete",
@@ -178,11 +185,6 @@ async def chat(
                 "error": state.get("error"),
             },
         )
-        print( "task_id", task_id,
-                "status", state["status"],
-                "final_result", state.get("final_result"),
-                "error", state.get("error"),
-            )
 
     return StreamingResponse(
         event_generator(),
@@ -192,6 +194,4 @@ async def chat(
 
 @app.get("/")
 async def root():
-    return {
-        "message": "Multi-agent research assistant backend is up"
-    }
+    return {"message": "Multi-agent research assistant backend is up"}
