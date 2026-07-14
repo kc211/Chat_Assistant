@@ -15,12 +15,6 @@ logger = logging.getLogger("llm")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-
-# ---------------------------------------------------------------------------
-# One structured error type for the whole backend. Every LLM / service
-# failure is normalised into this so main.py can turn it straight into an SSE
-# "error" event: {type, status, title, message, node, retryable}. The raw
-# exception is logged server-side only; `message` is user-safe.
 # ---------------------------------------------------------------------------
 class LLMError(Exception):
     def __init__(self, status, err_type, title, message, retryable):

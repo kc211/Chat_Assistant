@@ -124,7 +124,7 @@ research_assistant_app/
 | Node.js | 18+ | Frontend (Vite 5) |
 | PostgreSQL | 13+ | Task/document storage |
 | Gemini API key | - | LLM + embeddings |
-| Serper.dev API key | - | Web search (free, no card) |
+| Serper.dev API key | - | Web search |
 
 ---
 

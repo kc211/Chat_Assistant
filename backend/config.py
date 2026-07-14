@@ -5,9 +5,8 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Web search uses the Brave Search API (free tier, ~2k calls/month).
-BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
-# Deprecated: kept only so any lingering import does not break. Unused.
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+
 
 SERPER_API_KEY =os.getenv("SERPER_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/research_agent")

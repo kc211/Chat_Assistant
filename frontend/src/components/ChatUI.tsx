@@ -1,11 +1,8 @@
 import type { useChat } from "../hooks/useChat";
 import type { Message, Pill } from "../hooks/useChat";
 
-// All presentation lives here. Dumb component: it receives everything from
-// the useChat hook and renders. No fetch/state logic.
 type ChatController = ReturnType<typeof useChat>;
 
-// --- one row of per-node status pills (one pill per node) ---
 function TracePills({ pills }: { pills: Pill[] }) {
   if (!pills.length) return null;
   return (
@@ -29,7 +26,6 @@ function TracePills({ pills }: { pills: Pill[] }) {
   );
 }
 
-// --- a single chat bubble (user or assistant) ---
 function ChatMessage({ m }: { m: Message }) {
   const isUser = m.role === "user";
   return (
@@ -43,13 +39,12 @@ function ChatMessage({ m }: { m: Message }) {
       >
         {isUser && m.pdfName && <div className="text-xs text-neutral-500 mb-1">📎 {m.pdfName}</div>}
 
-        {/* "Working…" pinned above the pills for the whole run */}
+  
         {!isUser && m.status === "running" && !m.content && (
           <div className="text-sm text-neutral-500">Working…</div>
         )}
 
-        {/* One pill per node; status updates in place */}
-        {!isUser && m.pills && <TracePills pills={m.pills} />}
+             {!isUser && m.pills && <TracePills pills={m.pills} />}
 
         {m.content && (
           <div
@@ -65,7 +60,6 @@ function ChatMessage({ m }: { m: Message }) {
   );
 }
 
-// --- the footer: attachment chip + attach button + input + send ---
 function ChatComposer({ chat }: { chat: ChatController }) {
   const { input, setInput, pendingFile, attachedDoc, streaming, fileInputRef, handleFileSelect, clearAttachment, handleSend } = chat;
   return (
