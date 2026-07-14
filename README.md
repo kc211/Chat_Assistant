@@ -144,4 +144,3 @@ Given more time, the system could include:
 
 ---
 
-The remaining sections from the original README (Project Layout, Configuration, SSE Events, Error Handling, Troubleshooting, etc.) should be retained as they already accurately document the implementation.
