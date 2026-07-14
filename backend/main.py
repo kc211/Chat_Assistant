@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import uuid
@@ -29,7 +30,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -39,74 +39,59 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/chat")
-async def chat(
-    goal: str = Form(...),
-    file: UploadFile | None = File(None),
-    doc_id: str | None = Form(None),
-):
-    """
-    Single endpoint:
-    - Accepts a goal.
-    - Optionally accepts a PDF.
-    - Streams node execution back using SSE.
-    """
+async def chat(goal: str = Form(...), file: UploadFile | None = File(None), doc_id: str | None = Form(None)):
+    """Single endpoint: send a goal, optionally attach a new PDF (ingested
+    inline), or reference a previously-attached one via doc_id. Streams the
+    orchestrator run over SSE, including live 'node · running' pills."""
 
-    file_path = None
-    filename = None
 
-    if file is not None:
-        new_doc_id = str(uuid.uuid4())
-        file_path = os.path.join(UPLOAD_DIR, f"{new_doc_id}.pdf")
-        filename = file.filename
-
-        file_bytes = await file.read()
-
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_bytes)
-
-        doc_id = new_doc_id
+    file_bytes = await file.read() if file is not None else None
+    file_name = file.filename if file is not None else None
 
     async def event_generator():
         nonlocal doc_id
 
-        # A task_id is created up front so that a failure ANYWHERE below
-        # (including PDF ingestion) can still be recorded as "failed" in the
-        # DB and reported to the client, then the stream closed cleanly.
         task_id = str(uuid.uuid4())
 
         # -------------------------------
-        # PDF ingestion (now fully guarded)
+        # Inline PDF ingestion 
 
-        if file_path is not None:
-            yield sse_format(
-                "node_update",
-                {"node": "ingest_pdf", "status": "started", "trace_tail": None},
-            )
-
+        if file_bytes is not None:
+            yield sse_format("node_update", {"node": "ingest_pdf", "status": "running", "trace_tail": {
+                "step": 0, "node": "ingest_pdf", "status": "running", "detail": "ingesting PDF"}})
             try:
+                new_doc_id = str(uuid.uuid4())
+                file_path = os.path.join(UPLOAD_DIR, f"{new_doc_id}.pdf")
+                with open(file_path, "wb") as buffer:
+                    buffer.write(file_bytes)
+
                 full_text = await extract_text_from_pdf(file_path)
-                chunks = await chunk_text(full_text, doc_title=filename)
+                chunks = await chunk_text(full_text, doc_title=file_name)
                 vectors = await embed_chunks(chunks)
-                await add_chunks_to_collection(doc_id, chunks, vectors)
-                await save_document(doc_id, filename, file_path, len(chunks))
+                await add_chunks_to_collection(new_doc_id, chunks, vectors)
+                await save_document(new_doc_id, file_name, file_path, len(chunks))
+                doc_id = new_doc_id
             except Exception as exc:
-                # Full traceback stays server-side; client gets a clean event.
                 logger.exception("PDF ingestion failed")
-                # Best-effort: record the failed task without crashing further.
                 try:
                     await create_task(task_id, goal, doc_id)
-                    await update_task(task_id, "failed", None,
-                                      "PDF ingestion failed.", [])
+                    await update_task(task_id, "failed", None, "PDF ingestion failed.", [])
                 except Exception:
                     logger.exception("failed to record failed ingestion task")
+                yield sse_format("node_update", {"node": "ingest_pdf", "status": "failed", "trace_tail": {
+                    "step": 0, "node": "ingest_pdf", "status": "failed", "detail": "ingestion failed"}})
                 yield sse_error(exc, node="ingest_pdf")
-                return  # stop the stream — no trailing task_complete
+                return  # stop — no trailing task_complete
 
-            yield sse_format(
-                "doc_ingested",
-                {"doc_id": doc_id, "filename": filename},
-            )
+            yield sse_format("node_update", {"node": "ingest_pdf", "status": "done", "trace_tail": {
+                "step": 0, "node": "ingest_pdf", "status": "done", "detail": "PDF ingested"}})
+            yield sse_format("doc_ingested", {"doc_id": doc_id, "filename": file_name})
 
         # -------------------------------
         # Create task
@@ -123,75 +108,88 @@ async def chat(
         yield sse_format("task_started", {"task_id": task_id})
 
         # -------------------------------
-        # Execute LangGraph
+        # Run the graph, streaming live 'running' pills via a queue.
+        #
+        # Nodes push a 'node · running' event through state["_emit"] BEFORE
+        # their slow work (so the loader shows during LLM calls / retries).
+        # The graph's own per-node output yields the 'done'/'failed' pills.
+        # Both flow through one queue drained here. The frontend keys pills by
+        # node name and updates in place -> exactly one pill per node.
 
-        try:
-            logger.info("Starting graph execution")
+        queue: asyncio.Queue = asyncio.Queue()
 
-            async for step_output in compiled_graph.astream(state):
-                for node_name, update in step_output.items():
-                    state.update(update)
+        async def emit(payload: dict) -> None:
+            await queue.put(("node_update", payload))
 
-                    yield sse_format(
-                        "node_update",
-                        {
+        state["_emit"] = emit
+
+        async def run_graph():
+            try:
+                async for step_output in compiled_graph.astream(state):
+                    for node_name, update in step_output.items():
+                        state.update(update)
+                        await queue.put(("node_update", {
                             "node": node_name,
                             "status": state.get("status"),
                             "trace_tail": state["trace"][-1] if state["trace"] else None,
-                        },
-                    )
+                        }))
+                await queue.put(("__done__", None))
+            except Exception as exc:  # a node raised -> stop the whole run
+                await queue.put(("__error__", exc))
 
-        except Exception as exc:
-            # A node raised (e.g. LLM 503/429/etc.). Mark failed, tell the
-            # client with a structured error, and close the stream. We do
-            # NOT fall through to task_complete — that trailing event was
-            # what produced the empty/duplicate assistant bubble.
-            logger.exception("graph execution failed")
-            state["status"] = "failed"
-            state["error"] = getattr(exc, "message", "Task execution failed.")
-
-            failed_node = getattr(exc, "node", None)
-            try:
-                await update_task(task_id, "failed", state.get("final_result"),
-                                  state["error"], state["trace"])
-            except Exception:
-                logger.exception("failed to persist failed task")
-
-            yield sse_error(exc, node=failed_node)
-            return
-
-        # -------------------------------
-        # Save final task (success / partial path only)
+        task = asyncio.create_task(run_graph())
 
         try:
-            await update_task(
-                task_id,
-                state["status"],
-                state.get("final_result"),
-                state.get("error"),
-                state["trace"],
-            )
+            while True:
+                kind, payload = await queue.get()
+
+                if kind == "node_update":
+                    yield sse_format("node_update", payload)
+                    continue
+
+                if kind == "__error__":
+                    exc = payload
+                    logger.exception("graph execution failed", exc_info=exc)
+                    state["status"] = "failed"
+                    state["error"] = getattr(exc, "message", "Task execution failed.")
+                    failed_node = getattr(exc, "node", None)
+                    # Emit the failing node's pill (running -> failed) BEFORE the
+                    # error frame, so the pill flips even without frontend help.
+                    if failed_node:
+                        yield sse_format("node_update", {
+                            "node": failed_node,
+                            "status": "failed",
+                            "trace_tail": {"step": state.get("step_count", 0), "node": failed_node,
+                                           "status": "failed", "detail": state["error"]},
+                        })
+                    try:
+                        await update_task(task_id, "failed", state.get("final_result"),
+                                          state["error"], state["trace"])
+                    except Exception:
+                        logger.exception("failed to persist failed task")
+                    yield sse_error(exc, node=failed_node)
+                    return  # no trailing task_complete
+
+                if kind == "__done__":
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+        # -------------------------------
+        # Success path only (every node succeeded)
+
+        try:
+            await update_task(task_id, state["status"], state.get("final_result"),
+                              state.get("error"), state["trace"])
         except Exception as exc:
             logger.exception("failed to persist completed task")
             yield sse_error(exc, node="database")
             return
 
-        yield sse_format(
-            "task_complete",
-            {
-                "task_id": task_id,
-                "status": state["status"],
-                "final_result": state.get("final_result"),
-                "error": state.get("error"),
-            },
-        )
+        yield sse_format("task_complete", {
+            "task_id": task_id, "status": state["status"],
+            "final_result": state.get("final_result"), "error": state.get("error"),
+        })
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-    )
-
-
-@app.get("/")
-async def root():
-    return {"message": "Multi-agent research assistant backend is up"}
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

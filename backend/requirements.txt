@@ -9,3 +9,4 @@ psycopg[binary,pool]
 langgraph
 httpx
 tenacity
+python-multipart
