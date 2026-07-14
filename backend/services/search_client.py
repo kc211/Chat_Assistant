@@ -3,39 +3,29 @@ import logging
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import BRAVE_API_KEY
+from config import SERPER_API_KEY
 from services.llm_client import LLMError
 
 logger = logging.getLogger("search")
-
-# Brave Web Search API. Returns blue-link results with description/url, which
-# we normalise to the same {content, url} shape the rest of the app expects,
-# so gatherer_web_node / gatherer_both_node need no changes.
-BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+SERPER_URL = "https://google.serper.dev/search"
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
 async def _search_web_raw(query: str, max_results: int = 5) -> list[dict]:
-    """Raw Brave call with 3x exponential-backoff retry. The backoff also
-    absorbs Brave's free-tier 1 req/sec rate limit (429), which
-    raise_for_status() turns into an HTTPStatusError that triggers a retry."""
-
-    print("inside the search query function------")
-    headers = {"Accept": "application/json", "X-Subscription-Token": BRAVE_API_KEY}
-    params = {"q": query, "count": max_results}  # Brave caps count at 20
+   
+    headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    payload = {"q": query, "num": max_results}
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(BRAVE_URL, headers=headers, params=params)
-        resp.raise_for_status()  # 429/5xx -> HTTPStatusError -> retried above
+        resp = await client.post(SERPER_URL, headers=headers, json=payload)
+        resp.raise_for_status()
         data = resp.json()
 
-        print("-----------------")
-        print(data)
-
-        results = (data.get("web") or {}).get("results") or []
+        
+        results = data.get("organic") or []
         out = []
         for r in results[:max_results]:
-            content = r.get("description") or r.get("title") or ""
-            url = r.get("url") or ""
+            content = r.get("snippet") or r.get("title") or ""
+            url = r.get("link") or ""
             if content and url:
                 out.append({"content": content, "url": url})
         return out
@@ -53,7 +43,7 @@ async def search_web(query: str, max_results: int = 5) -> list[dict]:
         if status == 429:
             raise LLMError(429, "web_search_error", "Web Search Rate Limited",
                            "Web search hit its rate limit. Please try again shortly.", True) from exc
-        if status == (401,403):
+        if status in (401, 403):
             raise LLMError(401, "web_search_error", "Web Search Auth Failed",
                            "Web search authentication failed. Please verify the search API key.", False) from exc
         raise LLMError(502, "web_search_error", "Web Search Failed",
