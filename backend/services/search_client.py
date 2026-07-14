@@ -53,7 +53,7 @@ async def search_web(query: str, max_results: int = 5) -> list[dict]:
         if status == 429:
             raise LLMError(429, "web_search_error", "Web Search Rate Limited",
                            "Web search hit its rate limit. Please try again shortly.", True) from exc
-        if status == 401:
+        if status == (401,403):
             raise LLMError(401, "web_search_error", "Web Search Auth Failed",
                            "Web search authentication failed. Please verify the search API key.", False) from exc
         raise LLMError(502, "web_search_error", "Web Search Failed",
